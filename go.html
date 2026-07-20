@@ -378,33 +378,105 @@
     draw();
   }
 
+  function isLikelyEye(b, x, y, color) {
+    for (const [nx, ny] of neighbors(x, y)) {
+      if (b[idx(nx, ny)] !== color) return false;
+    }
+    const diagonals = [[x - 1, y - 1], [x + 1, y - 1], [x - 1, y + 1], [x + 1, y + 1]];
+    let onBoardDiag = 0, colorDiag = 0;
+    diagonals.forEach(([dx, dy]) => {
+      if (inBounds(dx, dy)) {
+        onBoardDiag++;
+        if (b[idx(dx, dy)] === color) colorDiag++;
+      }
+    });
+    if (onBoardDiag < 4) return colorDiag === onBoardDiag;
+    return colorDiag >= 3;
+  }
+
+  function scoreAiMove(x, y, stoneCoords, totalStones, starPoints) {
+    const res = tryMove(board, x, y, WHITE);
+    let score = res.captured * 120;
+
+    // avoid leaving the new stone's own group short on liberties
+    const ownGroup = getGroup(res.board, x, y);
+    if (ownGroup.liberties.size === 1) score -= 60;
+    else if (ownGroup.liberties.size === 2) score -= 10;
+
+    // rescue a friendly group that is currently in atari
+    for (const [nx, ny] of neighbors(x, y)) {
+      if (board[idx(nx, ny)] === WHITE) {
+        const g = getGroup(board, nx, ny);
+        if (g.liberties.size === 1) score += 70;
+      }
+    }
+
+    // reward putting opponent groups in atari (bigger groups are juicier)
+    const seen = new Set();
+    for (const [nx, ny] of neighbors(x, y)) {
+      if (res.board[idx(nx, ny)] === BLACK) {
+        const key = idx(nx, ny);
+        if (seen.has(key)) continue;
+        const g = getGroup(res.board, nx, ny);
+        g.stones.forEach(([gx, gy]) => seen.add(idx(gx, gy)));
+        if (g.liberties.size === 1) score += 45 + g.stones.length * 8;
+        else if (g.liberties.size === 2) score += 10;
+      }
+    }
+
+    // prefer moves near existing action over scattered isolated plays
+    let minDist = totalStones === 0 ? 0 : Infinity;
+    for (const [sx, sy] of stoneCoords) {
+      const d = Math.max(Math.abs(sx - x), Math.abs(sy - y));
+      if (d < minDist) minDist = d;
+    }
+    score += Math.max(0, 6 - minDist) * 3;
+
+    // opening heuristic: favor star points, avoid the first two lines early
+    if (totalStones < N) {
+      if (starPoints.some(([px, py]) => px === x && py === y)) score += 15;
+      const distFromEdge = Math.min(x, y, N - 1 - x, N - 1 - y);
+      if (distFromEdge === 0) score -= 15;
+      else if (distFromEdge === 1) score -= 5;
+    }
+
+    score += Math.random() * 3;
+    return score;
+  }
+
   function maybeAiMove() {
     if (gameOver) return;
     if (opponentSelect.value !== 'ai' || turn !== WHITE) return;
     setTimeout(() => {
       if (gameOver) return;
-      const moves = legalMoves(board, WHITE, koBoardString);
-      if (moves.length === 0) {
+      const allMoves = legalMoves(board, WHITE, koBoardString);
+      if (allMoves.length === 0) {
         passTurn();
         return;
       }
-      // prefer moves that capture, otherwise random
+
+      let candidates = allMoves.filter(([x, y]) => !isLikelyEye(board, x, y, WHITE));
+      if (candidates.length === 0) candidates = allMoves;
+
+      const stoneCoords = [];
+      for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+          if (board[idx(x, y)] !== EMPTY) stoneCoords.push([x, y]);
+        }
+      }
+      const totalStones = stoneCoords.length;
+      const starPoints = getStarPoints(N);
+
       let best = null;
-      let bestCaptured = -1;
-      for (const [x, y] of moves) {
-        const res = tryMove(board, x, y, WHITE);
-        if (res.captured > bestCaptured) {
-          bestCaptured = res.captured;
+      let bestScore = -Infinity;
+      for (const [x, y] of candidates) {
+        const s = scoreAiMove(x, y, stoneCoords, totalStones, starPoints);
+        if (s > bestScore) {
+          bestScore = s;
           best = [x, y];
         }
       }
-      let choice;
-      if (bestCaptured > 0) {
-        choice = best;
-      } else {
-        choice = moves[Math.floor(Math.random() * moves.length)];
-      }
-      placeStone(choice[0], choice[1]);
+      placeStone(best[0], best[1]);
     }, 400);
   }
 
